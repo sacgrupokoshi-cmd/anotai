@@ -2,86 +2,80 @@
 # interface/dashboard.py — Dashboard Visual do Anotaí
 # ============================================================
 import streamlit as st
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import pandas as pd
 from datetime import datetime
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DATABASE_PATH, CESTOS_PF
+from config import CESTOS_PF
 
-# ============================================================
-# CONFIGURAÇÃO DA PÁGINA
-# ============================================================
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 st.set_page_config(
     page_title="Anotaí — Dashboard",
     page_icon="🧺",
     layout="wide"
 )
 
-# Reduz espaço do topo
 st.markdown("<style>div.block-container{padding-top:1rem;}</style>", unsafe_allow_html=True)
 
-# ============================================================
-# FUNÇÕES DE DADOS
-# ============================================================
 
 def get_connection():
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return psycopg2.connect(DATABASE_URL)
 
 
 def buscar_usuarios():
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("SELECT * FROM usuarios")
     usuarios = [dict(row) for row in cursor.fetchall()]
+    cursor.close()
     conn.close()
     return usuarios
 
 
-def buscar_saldo_cestos(usuario_id: int) -> dict:
+def buscar_saldo_cestos(usuario_id):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     mes_atual = datetime.now().strftime("%Y-%m")
     cursor.execute("""
-        SELECT nome_cesto, saldo
-        FROM cestos_saldo
-        WHERE usuario_id = ? AND mes = ?
+        SELECT nome_cesto, saldo FROM cestos_saldo
+        WHERE usuario_id = %s AND mes = %s
     """, (usuario_id, mes_atual))
     resultados = {row["nome_cesto"]: row["saldo"] for row in cursor.fetchall()}
+    cursor.close()
     conn.close()
     return resultados
 
 
-def buscar_lancamentos(usuario_id: int) -> list:
+def buscar_lancamentos(usuario_id):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("""
         SELECT * FROM lancamentos
-        WHERE usuario_id = ?
-        ORDER BY criado_em DESC
-        LIMIT 50
+        WHERE usuario_id = %s
+        ORDER BY criado_em DESC LIMIT 50
     """, (usuario_id,))
     resultados = [dict(row) for row in cursor.fetchall()]
+    cursor.close()
     conn.close()
     return resultados
 
 
-def buscar_totais_mes(usuario_id: int) -> dict:
+def buscar_totais_mes(usuario_id):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     mes_atual = datetime.now().strftime("%Y-%m")
     cursor.execute("""
-        SELECT tipo, SUM(valor) as total
-        FROM lancamentos
-        WHERE usuario_id = ?
-        AND strftime('%Y-%m', data) = ?
+        SELECT tipo, SUM(valor) as total FROM lancamentos
+        WHERE usuario_id = %s AND TO_CHAR(data, 'YYYY-MM') = %s
         GROUP BY tipo
     """, (usuario_id, mes_atual))
     totais = {row["tipo"]: row["total"] for row in cursor.fetchall()}
+    cursor.close()
     conn.close()
     return totais
 
@@ -93,84 +87,63 @@ def buscar_totais_mes(usuario_id: int) -> dict:
 st.title("🧺 Anotaí — Dashboard Financeiro")
 st.markdown("---")
 
-# Verifica se o banco existe
-if not os.path.exists(DATABASE_PATH):
-    st.error("❌ Banco de dados não encontrado. Rode o bot primeiro!")
+if not DATABASE_URL:
+    st.error("❌ DATABASE_URL não configurada!")
     st.stop()
 
-# Busca usuários
-usuarios = buscar_usuarios()
+try:
+    usuarios = buscar_usuarios()
+except Exception as e:
+    st.error(f"❌ Erro ao conectar ao banco: {e}")
+    st.stop()
 
 if not usuarios:
     st.warning("Nenhum usuário encontrado. Mande /start no bot primeiro!")
     st.stop()
 
-# Seletor de usuário
 nomes = {u["nome"]: u["id"] for u in usuarios}
 usuario_selecionado = st.selectbox("👤 Usuário", list(nomes.keys()))
 usuario_id = nomes[usuario_selecionado]
 
-# Mês em português
 meses = {
-    "January": "Janeiro", "February": "Fevereiro", "March": "Março",
-    "April": "Abril", "May": "Maio", "June": "Junho",
-    "July": "Julho", "August": "Agosto", "September": "Setembro",
-    "October": "Outubro", "November": "Novembro", "December": "Dezembro"
+    "01": "Janeiro", "02": "Fevereiro", "03": "Março",
+    "04": "Abril", "05": "Maio", "06": "Junho",
+    "07": "Julho", "08": "Agosto", "09": "Setembro",
+    "10": "Outubro", "11": "Novembro", "12": "Dezembro"
 }
-mes_en = datetime.now().strftime("%B")
-mes_atual = f"{meses[mes_en]}/{datetime.now().strftime('%Y')}"
+mes_num = datetime.now().strftime("%m")
+ano = datetime.now().strftime("%Y")
+mes_atual = f"{meses[mes_num]}/{ano}"
 
 st.subheader(f"📅 {mes_atual}")
 
-# ============================================================
-# CARDS DE RESUMO
-# ============================================================
 totais = buscar_totais_mes(usuario_id)
-total_entrada = totais.get("entrada", 0)
-total_saida = totais.get("saida", 0)
+total_entrada = totais.get("entrada", 0) or 0
+total_saida = totais.get("saida", 0) or 0
 saldo_mes = total_entrada - total_saida
 
 col1, col2, col3 = st.columns(3)
-
 with col1:
-    st.metric(
-        label="💚 Total Entradas",
-        value=f"R$ {total_entrada:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-
+    st.metric("💚 Total Entradas", f"R$ {total_entrada:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 with col2:
-    st.metric(
-        label="🔴 Total Saídas",
-        value=f"R$ {total_saida:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-
+    st.metric("🔴 Total Saídas", f"R$ {total_saida:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 with col3:
-    st.metric(
-        label="💰 Saldo do Mês",
-        value=f"R$ {saldo_mes:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
+    st.metric("💰 Saldo do Mês", f"R$ {saldo_mes:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
 st.markdown("---")
-
-# ============================================================
-# CESTOS
-# ============================================================
 st.subheader("🧺 Status dos Cestos")
 
 saldos = buscar_saldo_cestos(usuario_id)
 
 if not saldos:
-    st.info("Nenhum cesto movimentado ainda. Registre uma entrada no bot!")
+    st.info("Nenhum cesto movimentado ainda.")
 else:
     for nome, config in CESTOS_PF.items():
         emoji = config["emoji"]
-        saldo = saldos.get(nome, 0)
-
+        saldo = saldos.get(nome, 0) or 0
         col_nome, col_barra, col_valor = st.columns([2, 4, 2])
-
         with col_nome:
             st.write(f"{emoji} **{nome}**")
-
         with col_barra:
             if total_entrada > 0:
                 orcamento = total_entrada * (config["percentual"] / 100)
@@ -179,17 +152,12 @@ else:
                 st.progress(percentual_usado / 100)
             else:
                 st.progress(0)
-
         with col_valor:
             saldo_fmt = f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             cor = "🟢" if saldo > 0 else "🔴"
             st.write(f"{cor} {saldo_fmt}")
 
 st.markdown("---")
-
-# ============================================================
-# ÚLTIMOS LANÇAMENTOS
-# ============================================================
 st.subheader("📋 Últimos Lançamentos")
 
 lancamentos = buscar_lancamentos(usuario_id)
