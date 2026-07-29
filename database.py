@@ -208,3 +208,14 @@ def buscar_totais_mes(usuario_id: int) -> dict:
     cursor.close()
     conn.close()
     return totais
+    def apagar_dados_usuario(usuario_id: int):
+    """Apaga todos os lançamentos e saldos de cestos do usuário."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM cestos_saldo WHERE usuario_id = %s", (usuario_id,))
+    cursor.execute("DELETE FROM lancamentos WHERE usuario_id = %s", (usuario_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()

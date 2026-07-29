@@ -1,13 +1,14 @@
 # ============================================================
-# bot.py — Bot do Telegram — Anotaí (Fase 4)
+# bot.py — Bot do Telegram — Anotaí (Fase Final)
 # ============================================================
 import logging
 from datetime import datetime
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    ConversationHandler,
     filters,
     ContextTypes,
 )
@@ -22,6 +23,7 @@ from database import (
     abater_do_cesto,
     buscar_saldo_cestos,
     buscar_totais_mes,
+    apagar_dados_usuario,
 )
 from core.ia_classificador import classificar_lancamento, formatar_resposta
 
@@ -30,9 +32,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+CONFIRMAR_APAGAR = 1
+
 
 def formatar_distribuicao(valor: float) -> str:
-    """Mostra como o dinheiro foi distribuído nos cestos."""
     linhas = ["", "🧺 *Distribuído nos cestos:*", ""]
     for nome, config in CESTOS_PF.items():
         emoji = config["emoji"]
@@ -44,50 +47,38 @@ def formatar_distribuicao(valor: float) -> str:
 
 
 def formatar_cestos(saldos: dict) -> str:
-    """Mostra o saldo atual de cada cesto."""
     linhas = ["🧺 *Seus Cestos — Mês Atual:*", ""]
-
     for nome, config in CESTOS_PF.items():
         emoji = config["emoji"]
-        saldo = saldos.get(nome, 0)
+        saldo = saldos.get(nome, 0) or 0
         sinal = "+" if saldo >= 0 else ""
         saldo_fmt = f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
         if saldo < 0:
             status = "🚨 Estourado!"
         elif saldo == 0:
             status = "⚪ Vazio"
         else:
             status = "✅"
-
         linhas.append(f"{emoji} *{nome}*")
         linhas.append(f"   Saldo: {sinal}{saldo_fmt} {status}")
         linhas.append("")
-
     return "\n".join(linhas)
 
 
 async def comando_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Responde ao /start."""
     usuario_telegram = update.effective_user
     get_ou_criar_usuario(
         telegram_id=str(usuario_telegram.id),
         nome=usuario_telegram.first_name
     )
-
     nome = usuario_telegram.first_name or "amigo(a)"
-
     mensagem = f"""
 👋 Olá, *{nome}*! Bem-vindo(a) ao *Anotaí*!
 
 💡 Sou seu assistente de destinação financeira.
 
-Em vez de só registrar o que você gastou, eu *dou destino ao seu dinheiro antes que ele desapareça*.
-
 ━━━━━━━━━━━━━━━━━━
 🧺 *Como usar:*
-
-Me manda o que aconteceu em linguagem natural:
 
 _"Gastei 47,80 no mercado, Nubank débito"_
 _"Recebi 3000 de salário"_
@@ -100,25 +91,23 @@ _"Paguei 89 na Netflix, crédito Nubank"_
 /cestos — Ver saldo dos seus cestos
 /relatorio — Relatório completo do mês
 /extrato — Últimos lançamentos
+/apagar — Apagar todos os seus dados
 /ajuda — Como usar
     """.strip()
-
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
 
 async def comando_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Responde ao /ajuda."""
     mensagem = """
 🆘 *Como usar o Anotaí*
 
 ━━━━━━━━━━━━━━━━━━
-📝 *Exemplos de saída (gasto):*
+📝 *Saída (gasto):*
 - _"Gastei 47,80 no mercado"_
 - _"Paguei 120 de luz"_
-- _"50 reais no ifood, Nubank crédito"_
 
 ━━━━━━━━━━━━━━━━━━
-💰 *Exemplos de entrada (receita):*
+💰 *Entrada (receita):*
 - _"Recebi 3000 de salário"_
 - _"Entrou 500 de freela"_
 
@@ -131,41 +120,31 @@ async def comando_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💝 Generosidade · 5%
 🎉 Torrar sem Dó · 5%
     """.strip()
-
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
 
 async def comando_cestos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mostra o saldo atual dos cestos."""
     usuario_telegram = update.effective_user
     usuario = get_ou_criar_usuario(str(usuario_telegram.id))
     saldos = buscar_saldo_cestos(usuario["id"])
-
     if not saldos:
         await update.message.reply_text(
-            "🧺 Seus cestos ainda estão vazios!\n\n"
-            "Registre uma entrada primeiro:\n"
-            "_'Recebi 3000 de salário'_",
+            "🧺 Seus cestos ainda estão vazios!\n\n_'Recebi 3000 de salário'_",
             parse_mode="Markdown"
         )
         return
-
     mensagem = formatar_cestos(saldos)
     await update.message.reply_text(mensagem, parse_mode="Markdown")
 
 
 async def comando_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gera o relatório mensal completo."""
     usuario_telegram = update.effective_user
     usuario = get_ou_criar_usuario(str(usuario_telegram.id))
-
     totais = buscar_totais_mes(usuario["id"])
     saldos = buscar_saldo_cestos(usuario["id"])
-
-    total_entrada = totais.get("entrada", 0)
-    total_saida = totais.get("saida", 0)
+    total_entrada = totais.get("entrada", 0) or 0
+    total_saida = totais.get("saida", 0) or 0
     saldo_mes = total_entrada - total_saida
-
     meses = {
         "01": "Janeiro", "02": "Fevereiro", "03": "Março",
         "04": "Abril", "05": "Maio", "06": "Junho",
@@ -175,72 +154,49 @@ async def comando_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mes_num = datetime.now().strftime("%m")
     ano = datetime.now().strftime("%Y")
     mes_nome = meses[mes_num]
-
     entrada_fmt = f"R$ {total_entrada:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     saida_fmt = f"R$ {total_saida:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     saldo_fmt = f"R$ {saldo_mes:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
     linhas = [
-        f"📊 *Relatório — {mes_nome}/{ano}*",
-        f"",
+        f"📊 *Relatório — {mes_nome}/{ano}*", "",
         f"💚 *Entradas:* {entrada_fmt}",
         f"🔴 *Saídas:* {saida_fmt}",
-        f"💰 *Saldo do mês:* {saldo_fmt}",
-        f"",
+        f"💰 *Saldo do mês:* {saldo_fmt}", "",
         f"━━━━━━━━━━━━━━━━━━",
-        f"🧺 *Status dos Cestos:*",
-        f"",
+        f"🧺 *Status dos Cestos:*", "",
     ]
-
     for nome, config in CESTOS_PF.items():
         emoji = config["emoji"]
         percentual = config["percentual"]
-        saldo = saldos.get(nome, 0)
+        saldo = saldos.get(nome, 0) or 0
         orcamento = total_entrada * (percentual / 100)
-        gasto = orcamento - saldo
-        gasto = max(gasto, 0)
-
+        gasto = max(orcamento - saldo, 0)
         orcamento_fmt = f"R$ {orcamento:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         gasto_fmt = f"R$ {gasto:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         saldo_fmt2 = f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
         if saldo < 0:
             status = "🚨 Estourado!"
-        elif saldo == 0:
-            status = "⚪ Zerado"
         elif gasto == 0:
             status = "💤 Sem gastos"
         else:
             percentual_usado = (gasto / orcamento * 100) if orcamento > 0 else 0
-            if percentual_usado >= 80:
-                status = "⚠️ Quase no limite"
-            else:
-                status = "✅ Ok"
-
+            status = "⚠️ Quase no limite" if percentual_usado >= 80 else "✅ Ok"
         linhas.append(f"{emoji} *{nome}* ({percentual}%) — {status}")
         linhas.append(f"   📦 Orçamento: {orcamento_fmt}")
         linhas.append(f"   💸 Gasto: {gasto_fmt}")
         linhas.append(f"   💵 Disponível: {saldo_fmt2}")
-        linhas.append(f"")
-
+        linhas.append("")
     await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
 
 
 async def comando_extrato(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mostra os últimos lançamentos."""
     usuario_telegram = update.effective_user
     usuario = get_ou_criar_usuario(str(usuario_telegram.id))
     lancamentos = buscar_lancamentos(usuario["id"], limite=10)
-
     if not lancamentos:
-        await update.message.reply_text(
-            "📭 Você ainda não tem lançamentos.\n\n"
-            "Me manda o que gastou ou recebeu hoje!"
-        )
+        await update.message.reply_text("📭 Você ainda não tem lançamentos.")
         return
-
     linhas = ["📋 *Últimos lançamentos:*", ""]
-
     for l in lancamentos:
         emoji = "💚" if l["tipo"] == "entrada" else "🔴"
         sinal = "+" if l["tipo"] == "entrada" else "-"
@@ -249,50 +205,88 @@ async def comando_extrato(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if l.get("cesto"):
             linhas.append(f"   🧺 {l['cesto']}")
         linhas.append("")
-
     await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
 
 
+async def comando_apagar_inicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inicia o processo de apagar dados — pede confirmação."""
+    teclado = ReplyKeyboardMarkup(
+        [["✅ Sim, apagar tudo", "❌ Não, cancelar"]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await update.message.reply_text(
+        "⚠️ *Tem certeza?*\n\n"
+        "Isso vai apagar *todos os seus lançamentos e saldos*.\n\n"
+        "Essa ação não pode ser desfeita!",
+        parse_mode="Markdown",
+        reply_markup=teclado
+    )
+    return CONFIRMAR_APAGAR
+
+
+async def comando_apagar_confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Executa ou cancela o apagamento."""
+    resposta = update.message.text
+    usuario_telegram = update.effective_user
+    usuario = get_ou_criar_usuario(str(usuario_telegram.id))
+
+    if resposta == "✅ Sim, apagar tudo":
+        apagar_dados_usuario(usuario["id"])
+        await update.message.reply_text(
+            "✅ *Dados apagados com sucesso!*\n\n"
+            "Seus lançamentos e saldos foram removidos.\n"
+            "Pode começar do zero!",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text(
+            "❌ *Cancelado!* Seus dados estão seguros.",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+    return ConversationHandler.END
+
+
+async def comando_apagar_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❌ *Cancelado!*",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
 async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processa qualquer mensagem de texto como lançamento."""
     texto = update.message.text
     usuario_telegram = update.effective_user
-
     if len(texto) < 3:
         return
-
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action="typing"
     )
-
     usuario = get_ou_criar_usuario(
         telegram_id=str(usuario_telegram.id),
         nome=usuario_telegram.first_name
     )
-
     dados = classificar_lancamento(texto)
-
     if not dados:
         await update.message.reply_text(
             "🤔 Não consegui entender.\n\n"
-            "Tente assim:\n"
             "• _'Gastei 50 no mercado'_\n"
             "• _'Recebi 2000 de salário'_",
             parse_mode="Markdown"
         )
         return
-
     salvar_lancamento(usuario["id"], dados)
-
     if dados.get("tipo") == "entrada":
         distribuir_nos_cestos(usuario["id"], dados.get("valor", 0))
         resposta = formatar_resposta(dados)
         distribuicao = formatar_distribuicao(dados.get("valor", 0))
-        await update.message.reply_text(
-            resposta + distribuicao,
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(resposta + distribuicao, parse_mode="Markdown")
     else:
         if dados.get("cesto"):
             abater_do_cesto(usuario["id"], dados.get("cesto"), dados.get("valor", 0))
@@ -301,26 +295,31 @@ async def processar_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 def main():
-    """Inicia o bot."""
     print("🗄️  Inicializando banco de dados...")
     criar_tabelas()
-
     if not TELEGRAM_TOKEN:
-        print("❌ TELEGRAM_TOKEN não configurado no arquivo .env!")
+        print("❌ TELEGRAM_TOKEN não configurado!")
         return
-
     print("🤖 Iniciando Anotaí...")
-
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    conv_apagar = ConversationHandler(
+        entry_points=[CommandHandler("apagar", comando_apagar_inicio)],
+        states={
+            CONFIRMAR_APAGAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, comando_apagar_confirmar)]
+        },
+        fallbacks=[CommandHandler("cancelar", comando_apagar_cancelar)]
+    )
 
     app.add_handler(CommandHandler("start", comando_start))
     app.add_handler(CommandHandler("ajuda", comando_ajuda))
     app.add_handler(CommandHandler("cestos", comando_cestos))
     app.add_handler(CommandHandler("relatorio", comando_relatorio))
     app.add_handler(CommandHandler("extrato", comando_extrato))
+    app.add_handler(conv_apagar)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, processar_mensagem))
 
-    print("✅ Bot rodando! Pressione Ctrl+C para parar.\n")
+    print("✅ Bot rodando!\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
