@@ -208,7 +208,9 @@ def buscar_totais_mes(usuario_id: int) -> dict:
     cursor.close()
     conn.close()
     return totais
-    def apagar_dados_usuario(usuario_id: int):
+
+
+def apagar_dados_usuario(usuario_id: int):
     """Apaga todos os lançamentos e saldos de cestos do usuário."""
     conn = get_connection()
     cursor = conn.cursor()
