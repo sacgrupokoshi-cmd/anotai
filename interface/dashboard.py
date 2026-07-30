@@ -80,6 +80,24 @@ def buscar_totais_mes(usuario_id):
     return totais
 
 
+def buscar_gastos_por_categoria(usuario_id):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    mes_atual = datetime.now().strftime("%Y-%m")
+    cursor.execute("""
+        SELECT categoria, SUM(valor) as total FROM lancamentos
+        WHERE usuario_id = %s
+        AND tipo = 'saida'
+        AND TO_CHAR(data, 'YYYY-MM') = %s
+        GROUP BY categoria
+        ORDER BY total DESC
+    """, (usuario_id, mes_atual))
+    resultados = [dict(row) for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return resultados
+
+
 # ============================================================
 # INTERFACE
 # ============================================================
@@ -117,6 +135,9 @@ mes_atual = f"{meses[mes_num]}/{ano}"
 
 st.subheader(f"📅 {mes_atual}")
 
+# ============================================================
+# CARDS DE RESUMO
+# ============================================================
 totais = buscar_totais_mes(usuario_id)
 total_entrada = totais.get("entrada", 0) or 0
 total_saida = totais.get("saida", 0) or 0
@@ -131,9 +152,53 @@ with col3:
     st.metric("💰 Saldo do Mês", f"R$ {saldo_mes:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
 st.markdown("---")
-st.subheader("🧺 Status dos Cestos")
 
+# ============================================================
+# GRÁFICOS
+# ============================================================
 saldos = buscar_saldo_cestos(usuario_id)
+gastos_categoria = buscar_gastos_por_categoria(usuario_id)
+
+if saldos or gastos_categoria:
+    col_graf1, col_graf2 = st.columns(2)
+
+    # Gráfico de pizza — Distribuição dos Cestos
+    with col_graf1:
+        st.subheader("🧺 Distribuição dos Cestos")
+        if saldos:
+            nomes_cestos = []
+            valores_cestos = []
+            for nome, config in CESTOS_PF.items():
+                if total_entrada > 0:
+                    valor = total_entrada * (config["percentual"] / 100)
+                    nomes_cestos.append(f"{config['emoji']} {nome}")
+                    valores_cestos.append(valor)
+
+            if valores_cestos:
+                df_pizza = pd.DataFrame({
+                    "Cesto": nomes_cestos,
+                    "Valor": valores_cestos
+                })
+                st.bar_chart(df_pizza.set_index("Cesto"))
+        else:
+            st.info("Registre uma entrada para ver a distribuição.")
+
+    # Gráfico de barras — Gastos por Categoria
+    with col_graf2:
+        st.subheader("📊 Gastos por Categoria")
+        if gastos_categoria:
+            df_cat = pd.DataFrame(gastos_categoria)
+            df_cat.columns = ["Categoria", "Valor (R$)"]
+            st.bar_chart(df_cat.set_index("Categoria"))
+        else:
+            st.info("Registre um gasto para ver as categorias.")
+
+    st.markdown("---")
+
+# ============================================================
+# CESTOS COM BARRAS DE PROGRESSO
+# ============================================================
+st.subheader("🧺 Status dos Cestos")
 
 if not saldos:
     st.info("Nenhum cesto movimentado ainda.")
@@ -158,6 +223,10 @@ else:
             st.write(f"{cor} {saldo_fmt}")
 
 st.markdown("---")
+
+# ============================================================
+# ÚLTIMOS LANÇAMENTOS
+# ============================================================
 st.subheader("📋 Últimos Lançamentos")
 
 lancamentos = buscar_lancamentos(usuario_id)
