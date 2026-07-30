@@ -5,6 +5,8 @@ import streamlit as st
 import psycopg2
 import psycopg2.extras
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
 import sys
 import os
@@ -159,41 +161,75 @@ st.markdown("---")
 saldos = buscar_saldo_cestos(usuario_id)
 gastos_categoria = buscar_gastos_por_categoria(usuario_id)
 
-if saldos or gastos_categoria:
-    col_graf1, col_graf2 = st.columns(2)
+col_graf1, col_graf2 = st.columns(2)
 
-    # Gráfico de pizza — Distribuição dos Cestos
-    with col_graf1:
-        st.subheader("🧺 Distribuição dos Cestos")
-        if saldos:
-            nomes_cestos = []
-            valores_cestos = []
-            for nome, config in CESTOS_PF.items():
-                if total_entrada > 0:
-                    valor = total_entrada * (config["percentual"] / 100)
-                    nomes_cestos.append(f"{config['emoji']} {nome}")
-                    valores_cestos.append(valor)
+# Gráfico de pizza — Distribuição dos Cestos
+with col_graf1:
+    st.subheader("🧺 Distribuição dos Cestos")
+    if total_entrada > 0:
+        nomes_cestos = []
+        valores_cestos = []
+        cores = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#3B1F2B", "#44BBA4"]
 
-            if valores_cestos:
-                df_pizza = pd.DataFrame({
-                    "Cesto": nomes_cestos,
-                    "Valor": valores_cestos
-                })
-                st.bar_chart(df_pizza.set_index("Cesto"))
-        else:
-            st.info("Registre uma entrada para ver a distribuição.")
+        for nome, config in CESTOS_PF.items():
+            valor = total_entrada * (config["percentual"] / 100)
+            nomes_cestos.append(f"{config['emoji']} {nome}")
+            valores_cestos.append(valor)
 
-    # Gráfico de barras — Gastos por Categoria
-    with col_graf2:
-        st.subheader("📊 Gastos por Categoria")
-        if gastos_categoria:
-            df_cat = pd.DataFrame(gastos_categoria)
-            df_cat.columns = ["Categoria", "Valor (R$)"]
-            st.bar_chart(df_cat.set_index("Categoria"))
-        else:
-            st.info("Registre um gasto para ver as categorias.")
+        fig_pizza = px.pie(
+            values=valores_cestos,
+            names=nomes_cestos,
+            color_discrete_sequence=cores,
+            hole=0.4,
+        )
+        fig_pizza.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
+            textfont_size=11,
+        )
+        fig_pizza.update_layout(
+            showlegend=False,
+            margin=dict(t=10, b=10, l=10, r=10),
+            height=350,
+        )
+        st.plotly_chart(fig_pizza, use_container_width=True)
+    else:
+        st.info("Registre uma entrada para ver a distribuição.")
 
-    st.markdown("---")
+# Gráfico de barras horizontais — Gastos por Categoria
+with col_graf2:
+    st.subheader("📊 Gastos por Categoria")
+    if gastos_categoria:
+        df_cat = pd.DataFrame(gastos_categoria)
+        df_cat.columns = ["Categoria", "Valor"]
+        df_cat = df_cat.sort_values("Valor", ascending=True)
+
+        fig_bar = px.bar(
+            df_cat,
+            x="Valor",
+            y="Categoria",
+            orientation="h",
+            color="Valor",
+            color_continuous_scale="Blues",
+            text="Valor",
+        )
+        fig_bar.update_traces(
+            texttemplate="R$ %{text:,.0f}",
+            textposition="outside",
+        )
+        fig_bar.update_layout(
+            showlegend=False,
+            coloraxis_showscale=False,
+            margin=dict(t=10, b=10, l=10, r=80),
+            height=350,
+            xaxis_title="",
+            yaxis_title="",
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("Registre um gasto para ver as categorias.")
+
+st.markdown("---")
 
 # ============================================================
 # CESTOS COM BARRAS DE PROGRESSO
